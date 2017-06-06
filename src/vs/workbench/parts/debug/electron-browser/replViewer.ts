@@ -5,7 +5,6 @@
 
 import * as nls from 'vs/nls';
 import { TPromise } from 'vs/base/common/winjs.base';
-import Strings = require('vs/base/common/strings');
 import { IAction } from 'vs/base/common/actions';
 import { isFullWidthCharacter, removeAnsiEscapeCodes, endsWith } from 'vs/base/common/strings';
 import { IActionItem } from 'vs/base/browser/ui/actionbar/actionbar';
