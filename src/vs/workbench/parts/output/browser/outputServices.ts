@@ -69,10 +69,10 @@ export class BufferedContent {
 
 		const id = this.idPool;
 		if (idx >= 0) {
-			const value = strings.removeAnsiEscapeCodes(this.data.slice(idx + 1).join(''));
+			const value = strings.removeUnsupportedAnsiEscapeCodes(this.data.slice(idx + 1).join(''));
 			return { value, id, append: true };
 		} else {
-			const value = strings.removeAnsiEscapeCodes(this.data.join(''));
+			const value = strings.removeUnsupportedAnsiEscapeCodes(this.data.join(''));
 			return { value, id };
 		}
 	}

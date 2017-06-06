@@ -659,11 +659,23 @@ const EL = /\x1B\x5B[12]?K/g; // Erase in line
 const COLOR_START = /\x1b\[\d+m/g; // Color
 const COLOR_END = /\x1b\[0?m/g; // Color
 
+// unsupported codes:
+const UNSUPPORTED_ANSI = ['0f', 's', 'u', 'K'];
+const UNSUPPORTED_ANSI_REGEX = '/\x1B\x5B[' + UNSUPPORTED_ANSI.join('|') + ']?/g';
+
 export function removeAnsiEscapeCodes(str: string): string {
 	if (str) {
 		str = str.replace(EL, '');
 		str = str.replace(COLOR_START, '');
 		str = str.replace(COLOR_END, '');
+	}
+
+	return str;
+}
+
+export function removeUnsupportedAnsiEscapeCodes(str: string): string {
+	if (str) {
+		str = str.replace(UNSUPPORTED_ANSI_REGEX, '');
 	}
 
 	return str;
