@@ -5,6 +5,7 @@
 
 import * as nls from 'vs/nls';
 import { TPromise } from 'vs/base/common/winjs.base';
+import Strings = require('vs/base/common/strings');
 import { IAction } from 'vs/base/common/actions';
 import { isFullWidthCharacter, removeAnsiEscapeCodes, endsWith } from 'vs/base/common/strings';
 import { IActionItem } from 'vs/base/browser/ui/actionbar/actionbar';
@@ -75,6 +76,11 @@ interface IKeyValueOutputTemplateData {
 }
 
 export class ReplExpressionsRenderer implements IRenderer {
+
+
+	// unsupported codes:
+	private static UNSUPPORTED_ANSI = ['0f', 's', 'u', 'K'];
+	private static  UNSUPPORTED_ANSI_REGEX = '/\x1B\x5B[' + ReplExpressionsRenderer.UNSUPPORTED_ANSI.join('|') + ']?/g';
 
 	private static VARIABLE_TEMPLATE_ID = 'variable';
 	private static EXPRESSION_TEMPLATE_ID = 'inputOutputPair';
@@ -278,6 +284,8 @@ export class ReplExpressionsRenderer implements IRenderer {
 		let currentToken: HTMLSpanElement;
 		let buffer: string = '';
 
+		text = this.removeUnsupportedAnsiCodes(text);
+
 		for (let i = 0, len = text.length; i < len; i++) {
 
 			// start of ANSI escape sequence (see http://ascii-table.com/ansi-escape-sequences.php)
@@ -304,11 +312,11 @@ export class ReplExpressionsRenderer implements IRenderer {
 
 					if (chr === 'm') { // set text color/mode.
 
-						// only respect text-foreground ranges and ignore the values for "black" & "white" because those
+						// only respect text-foreground ranges and ignore the values for "black"(30) & "white"(37) because those
 						// only make sense in combination with text-background ranges which we currently not support
 						let parsedMode = parseInt(code, 10);
 						let token = document.createElement('span');
-						if ((parsedMode >= 30 && parsedMode <= 37) || (parsedMode >= 90 && parsedMode <= 97)) {
+						if ((parsedMode > 30 && parsedMode < 37) || (parsedMode >= 90 && parsedMode <= 97)) {
 							token.className = 'code' + parsedMode;
 						} else if (parsedMode === 1) {
 							token.className = 'code-bold';
@@ -352,6 +360,15 @@ export class ReplExpressionsRenderer implements IRenderer {
 		}
 
 		return tokensContainer || buffer;
+	}
+
+
+	private removeUnsupportedAnsiCodes(str: string): string {
+		if (str) {
+			str = str.replace(ReplExpressionsRenderer.UNSUPPORTED_ANSI_REGEX, '');
+		}
+
+		return str;
 	}
 
 	private insert(arg: HTMLElement | string, target: HTMLElement): void {
