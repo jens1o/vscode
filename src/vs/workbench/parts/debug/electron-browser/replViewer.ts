@@ -77,9 +77,8 @@ interface IKeyValueOutputTemplateData {
 export class ReplExpressionsRenderer implements IRenderer {
 
 
-	// unsupported codes:
 	private static UNSUPPORTED_ANSI = ['0f', 's', 'u', 'K'];
-	private static  UNSUPPORTED_ANSI_REGEX = '/\x1B\x5B[' + ReplExpressionsRenderer.UNSUPPORTED_ANSI.join('|') + ']?/g';
+	private static UNSUPPORTED_ANSI_REGEX = '/\x1B\x5B[' + ReplExpressionsRenderer.UNSUPPORTED_ANSI.join('|') + ']?/g';
 
 	private static VARIABLE_TEMPLATE_ID = 'variable';
 	private static EXPRESSION_TEMPLATE_ID = 'inputOutputPair';
