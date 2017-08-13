@@ -12,7 +12,8 @@ import * as platform from 'vs/base/common/platform';
 import * as dom from 'vs/base/browser/dom';
 import Event, { Emitter } from 'vs/base/common/event';
 import Uri from 'vs/base/common/uri';
-import xterm = require('xterm');
+import { WindowsShellHelper } from 'vs/workbench/parts/terminal/electron-browser/windowsShellHelper';
+import XTermTerminal = require('xterm');
 import { Dimension } from 'vs/base/browser/builder';
 import { IContextKeyService, IContextKey } from 'vs/platform/contextkey/common/contextkey';
 import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
@@ -39,6 +40,9 @@ import pkg from 'vs/platform/node/package';
 /** The amount of time to consider terminal errors to be related to the launch */
 const LAUNCHING_DURATION = 500;
 
+// Enable search functionality in xterm.js instance
+XTermTerminal.loadAddon('search');
+
 class StandardTerminalProcessFactory implements ITerminalProcessFactory {
 	public create(env: { [key: string]: string }): cp.ChildProcess {
 		return cp.fork('./terminalProcess', [], {
@@ -46,6 +50,25 @@ class StandardTerminalProcessFactory implements ITerminalProcessFactory {
 			cwd: Uri.parse(path.dirname(require.toUrl('./terminalProcess'))).fsPath
 		});
 	}
+}
+
+enum ProcessState {
+	// The process has not been initialized yet.
+	UNINITIALIZED,
+	// The process is currently launching, the process is marked as launching
+	// for a short duration after being created and is helpful to indicate
+	// whether the process died as a result of bad shell and args.
+	LAUNCHING,
+	// The process is running normally.
+	RUNNING,
+	// The process was killed during launch, likely as a result of bad shell and
+	// args.
+	KILLED_DURING_LAUNCH,
+	// The process was killed by the user (the event originated from VS Code).
+	KILLED_BY_USER,
+	// The process was killed by itself, for example the shell crashed or `exit`
+	// was run.
+	KILLED_BY_PROCESS
 }
 
 export class TerminalInstance implements ITerminalInstance {
@@ -58,8 +81,8 @@ export class TerminalInstance implements ITerminalInstance {
 	private _id: number;
 	private _isExiting: boolean;
 	private _hadFocusOnExit: boolean;
-	private _isLaunching: boolean;
 	private _isVisible: boolean;
+	private _processState: ProcessState;
 	private _processReady: TPromise<void>;
 	private _isDisposed: boolean;
 	private _onDisposed: Emitter<ITerminalInstance>;
@@ -73,7 +96,7 @@ export class TerminalInstance implements ITerminalInstance {
 	private _instanceDisposables: lifecycle.IDisposable[];
 	private _processDisposables: lifecycle.IDisposable[];
 	private _wrapperElement: HTMLDivElement;
-	private _xterm: any;
+	private _xterm: XTermTerminal;
 	private _xtermElement: HTMLDivElement;
 	private _terminalHasTextContextKey: IContextKey<boolean>;
 	private _cols: number;
@@ -81,6 +104,7 @@ export class TerminalInstance implements ITerminalInstance {
 	private _messageTitleListener: (message: { type: string, content: string }) => void;
 	private _preLaunchInputQueue: string;
 	private _initialCwd: string;
+	private _windowsShellHelper: WindowsShellHelper;
 
 	private _widgetManager: TerminalWidgetManager;
 	private _linkHandler: TerminalLinkHandler;
@@ -93,6 +117,7 @@ export class TerminalInstance implements ITerminalInstance {
 	public get onTitleChanged(): Event<string> { return this._onTitleChanged.event; }
 	public get title(): string { return this._title; }
 	public get hadFocusOnExit(): boolean { return this._hadFocusOnExit; }
+	public get isTitleSetByProcess(): boolean { return !!this._messageTitleListener; }
 
 	public constructor(
 		private _terminalFocusContextKey: IContextKey<boolean>,
@@ -114,7 +139,7 @@ export class TerminalInstance implements ITerminalInstance {
 		this._skipTerminalCommands = [];
 		this._isExiting = false;
 		this._hadFocusOnExit = false;
-		this._isLaunching = true;
+		this._processState = ProcessState.UNINITIALIZED;
 		this._isVisible = false;
 		this._isDisposed = false;
 		this._id = TerminalInstance._idCounter++;
@@ -134,6 +159,14 @@ export class TerminalInstance implements ITerminalInstance {
 		this._initDimensions();
 		this._createProcess(this._shellLaunchConfig);
 		this._createXterm();
+
+		if (platform.isWindows) {
+			this._processReady.then(() => {
+				if (!this._isDisposed) {
+					this._windowsShellHelper = new WindowsShellHelper(this._processId, this._shellLaunchConfig.executable, this, this._xterm);
+				}
+			});
+		}
 
 		// Only attach xterm.js to the DOM if the terminal panel has been opened before.
 		if (_container) {
@@ -194,11 +227,17 @@ export class TerminalInstance implements ITerminalInstance {
 			}
 		}
 
-		const padding = parseInt(getComputedStyle(document.querySelector('.terminal-outer-container')).paddingLeft.split('px')[0], 10);
+		const outerContainer = document.querySelector('.terminal-outer-container');
+		const outerContainerStyle = getComputedStyle(outerContainer);
+		const padding = parseInt(outerContainerStyle.paddingLeft.split('px')[0], 10);
+		const paddingBottom = parseInt(outerContainerStyle.paddingBottom.split('px')[0], 10);
+
 		// Use left padding as right padding, right padding is not defined in CSS just in case
 		// xterm.js causes an unexpected overflow.
 		const innerWidth = width - padding * 2;
-		TerminalInstance._lastKnownDimensions = new Dimension(innerWidth, height);
+		const innerHeight = height - paddingBottom;
+
+		TerminalInstance._lastKnownDimensions = new Dimension(innerWidth, innerHeight);
 		return TerminalInstance._lastKnownDimensions;
 	}
 
@@ -206,7 +245,7 @@ export class TerminalInstance implements ITerminalInstance {
 	 * Create xterm.js instance and attach data listeners.
 	 */
 	protected _createXterm(): void {
-		this._xterm = xterm({
+		this._xterm = new XTermTerminal({
 			scrollback: this._configHelper.config.scrollback
 		});
 		if (this._shellLaunchConfig.initialText) {
@@ -261,6 +300,7 @@ export class TerminalInstance implements ITerminalInstance {
 			if (TabFocus.getTabFocusMode() && event.keyCode === 9) {
 				return false;
 			}
+
 			return undefined;
 		});
 		this._instanceDisposables.push(dom.addDisposableListener(this._xterm.element, 'mouseup', (event: KeyboardEvent) => {
@@ -276,7 +316,7 @@ export class TerminalInstance implements ITerminalInstance {
 			setTimeout(() => this._refreshSelectionContextKey(), 0);
 		}));
 
-		const xtermHelper: HTMLElement = this._xterm.element.querySelector('.xterm-helpers');
+		const xtermHelper: HTMLElement = <HTMLElement>this._xterm.element.querySelector('.xterm-helpers');
 		const focusTrap: HTMLElement = document.createElement('div');
 		focusTrap.setAttribute('tabindex', '0');
 		dom.addClass(focusTrap, 'focus-trap');
@@ -374,6 +414,9 @@ export class TerminalInstance implements ITerminalInstance {
 	}
 
 	public dispose(): void {
+		if (this._windowsShellHelper) {
+			this._windowsShellHelper.dispose();
+		}
 		if (this._linkHandler) {
 			this._linkHandler.dispose();
 		}
@@ -390,7 +433,11 @@ export class TerminalInstance implements ITerminalInstance {
 		}
 		if (this._process) {
 			if (this._process.connected) {
-				this._process.kill();
+				// If the process was still connected this dispose came from
+				// within VS Code, not the process, so mark the process as
+				// killed by the user.
+				this._processState = ProcessState.KILLED_BY_USER;
+				this._process.send({ event: 'shutdown' });
 			}
 			this._process = null;
 		}
@@ -516,17 +563,20 @@ export class TerminalInstance implements ITerminalInstance {
 		const platformKey = platform.isWindows ? 'windows' : platform.isMacintosh ? 'osx' : 'linux';
 		const envFromConfig = { ...process.env, ...this._configHelper.config.env[platformKey] };
 		const env = TerminalInstance.createTerminalEnv(envFromConfig, shell, this._initialCwd, locale, this._cols, this._rows);
-		this._title = shell.name || '';
 		this._process = cp.fork(Uri.parse(require.toUrl('bootstrap')).fsPath, ['--type=terminal'], {
 			env,
 			cwd: Uri.parse(path.dirname(require.toUrl('../node/terminalProcess'))).fsPath
 		});
-		if (!shell.name) {
+		this._processState = ProcessState.LAUNCHING;
+
+		if (shell.name) {
+			this.setTitle(shell.name, false);
+		} else {
 			// Only listen for process title changes when a name is not provided
+			this.setTitle(shell.executable, true);
 			this._messageTitleListener = (message) => {
 				if (message.type === 'title') {
-					this._title = message.content ? message.content : '';
-					this._onTitleChanged.fire(this._title);
+					this.setTitle(message.content ? message.content : '', true);
 				}
 			};
 			this._process.on('message', this._messageTitleListener);
@@ -548,7 +598,9 @@ export class TerminalInstance implements ITerminalInstance {
 		});
 		this._process.on('exit', exitCode => this._onPtyProcessExit(exitCode));
 		setTimeout(() => {
-			this._isLaunching = false;
+			if (this._processState === ProcessState.LAUNCHING) {
+				this._processState = ProcessState.RUNNING;
+			}
 		}, LAUNCHING_DURATION);
 	}
 
@@ -576,11 +628,22 @@ export class TerminalInstance implements ITerminalInstance {
 			exitCodeMessage = nls.localize('terminal.integrated.exitedWithCode', 'The terminal process terminated with exit code: {0}', exitCode);
 		}
 
-		// Only trigger wait on exit when the exit was triggered by the process, not through the
-		// `workbench.action.terminal.kill` command
-		const triggeredByProcess = exitCode !== null;
+		// If the process is marked as launching then mark the process as killed
+		// during launch. This typically means that there is a problem with the
+		// shell and args.
+		if (this._processState === ProcessState.LAUNCHING) {
+			this._processState = ProcessState.KILLED_DURING_LAUNCH;
+		}
 
-		if (triggeredByProcess && this._shellLaunchConfig.waitOnExit) {
+		// If TerminalInstance did not know about the process exit then it was
+		// triggered by the process, not on VS Code's side.
+		if (this._processState === ProcessState.RUNNING) {
+			this._processState = ProcessState.KILLED_BY_PROCESS;
+		}
+
+		// Only trigger wait on exit when the exit was triggered by the process,
+		// not through the `workbench.action.terminal.kill` command
+		if (this._processState === ProcessState.KILLED_BY_PROCESS && this._shellLaunchConfig.waitOnExit) {
 			if (exitCode) {
 				this._xterm.writeln(exitCodeMessage);
 			}
@@ -598,7 +661,7 @@ export class TerminalInstance implements ITerminalInstance {
 		} else {
 			this.dispose();
 			if (exitCode) {
-				if (this._isLaunching) {
+				if (this._processState === ProcessState.KILLED_DURING_LAUNCH) {
 					let args = '';
 					if (typeof this._shellLaunchConfig.args === 'string') {
 						args = this._shellLaunchConfig.args;
@@ -649,7 +712,7 @@ export class TerminalInstance implements ITerminalInstance {
 		const oldTitle = this._title;
 		this._createProcess(shell);
 		if (oldTitle !== this._title) {
-			this._onTitleChanged.fire(this._title);
+			this.setTitle(this._title, true);
 		}
 		this._process.on('message', (message) => this._sendPtyDataToXterm(message));
 
@@ -822,27 +885,29 @@ export class TerminalInstance implements ITerminalInstance {
 		});
 	}
 
-	public enableApiOnData(): void {
-		// Only send data through IPC if the API explicitly requests it.
-		this.onData(data => this._onDataForApi.fire({ instance: this, data }));
-	}
-
 	public static setTerminalProcessFactory(factory: ITerminalProcessFactory): void {
 		this._terminalProcessFactory = factory;
 	}
 
-	public setTitle(title: string): void {
+	public setTitle(title: string, eventFromProcess: boolean): void {
+		if (eventFromProcess) {
+			title = path.basename(title);
+			if (platform.isWindows) {
+				// Remove the .exe extension
+				title = title.split('.exe')[0];
+			}
+		} else {
+			// If the title has not been set by the API or the rename command, unregister the handler that
+			// automatically updates the terminal name
+			if (this._process && this._messageTitleListener) {
+				this._process.removeListener('message', this._messageTitleListener);
+				this._messageTitleListener = null;
+			}
+		}
 		const didTitleChange = title !== this._title;
 		this._title = title;
 		if (didTitleChange) {
 			this._onTitleChanged.fire(title);
-		}
-
-		// If the title was not set by the API, unregister the handler that
-		// automatically updates the terminal name
-		if (this._process && this._messageTitleListener) {
-			this._process.removeListener('message', this._messageTitleListener);
-			this._messageTitleListener = null;
 		}
 	}
 }

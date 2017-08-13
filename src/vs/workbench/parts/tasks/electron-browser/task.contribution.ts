@@ -26,6 +26,7 @@ import * as strings from 'vs/base/common/strings';
 import { ValidationStatus, ValidationState } from 'vs/base/common/parsers';
 import * as UUID from 'vs/base/common/uuid';
 import { LinkedMap, Touch } from 'vs/base/common/map';
+import { OcticonLabel } from 'vs/base/browser/ui/octiconLabel/octiconLabel';
 
 import { Registry } from 'vs/platform/registry/common/platform';
 import { ILifecycleService } from 'vs/platform/lifecycle/common/lifecycle';
@@ -473,29 +474,31 @@ class TaskStatusBarItem extends Themable implements IStatusbarItem {
 	}
 
 	public render(container: HTMLElement): IDisposable {
+
 		let callOnDispose: IDisposable[] = [];
-
-		const element = document.createElement('div');
-		const label = document.createElement('a');
-
+		const element = document.createElement('a');
 		Dom.addClass(element, 'task-statusbar-runningItem');
 
-		Dom.addClass(label, 'task-statusbar-runningItem-label');
-		element.appendChild(label);
-		element.title = nls.localize('runningTasks', "Show Running Tasks");
+		let labelElement = document.createElement('div');
+		Dom.addClass(labelElement, 'task-statusbar-runningItem-label');
+		element.appendChild(labelElement);
 
-		callOnDispose.push(Dom.addDisposableListener(label, 'click', (e: MouseEvent) => {
+		let label = new OcticonLabel(labelElement);
+		label.title = nls.localize('runningTasks', "Show Running Tasks");
+
+		$(element).hide();
+
+		callOnDispose.push(Dom.addDisposableListener(labelElement, 'click', (e: MouseEvent) => {
 			(this.taskService as TaskService).runShowTasks();
 		}));
 
 		let updateStatus = (): void => {
 			this.taskService.getActiveTasks().then(tasks => {
 				if (tasks.length === 0) {
-					label.innerHTML = nls.localize('nothingRunner', 'Running Tasks: 0');
-				} else if (tasks.length === 1) {
-					label.innerHTML = nls.localize('oneTasksRunnering', 'Running Tasks: 1');
+					$(element).hide();
 				} else {
-					label.innerHTML = nls.localize('nTasksRunnering', 'Running Tasks: {0}', tasks.length);
+					label.text = `$(tools) ${tasks.length}`;
+					$(element).show();
 				}
 			});
 		};
@@ -944,6 +947,9 @@ class TaskService extends EventEmitter implements ITaskService {
 		let entries: ProblemMatcherPickEntry[] = [];
 		for (let key of ProblemMatcherRegistry.keys()) {
 			let matcher = ProblemMatcherRegistry.get(key);
+			if (matcher.deprecated) {
+				continue;
+			}
 			if (matcher.name === matcher.label) {
 				entries.push({ label: matcher.name, matcher: matcher });
 			} else {
@@ -1027,6 +1033,9 @@ class TaskService extends EventEmitter implements ITaskService {
 			let identifier: TaskConfig.TaskIdentifier = Objects.assign(Object.create(null), task.defines);
 			delete identifier['_key'];
 			Object.keys(identifier).forEach(key => toCustomize[key] = identifier[key]);
+			if (task.problemMatchers && task.problemMatchers.length > 0 && Types.isStringArray(task.problemMatchers)) {
+				toCustomize.problemMatcher = task.problemMatchers;
+			}
 		}
 		if (!toCustomize) {
 			return TPromise.as(undefined);
@@ -1039,7 +1048,7 @@ class TaskService extends EventEmitter implements ITaskService {
 				}
 			}
 		} else {
-			if (task.problemMatchers === void 0 || task.problemMatchers.length === 0) {
+			if (toCustomize.problemMatcher === void 0 && task.problemMatchers === void 0 || task.problemMatchers.length === 0) {
 				toCustomize.problemMatcher = [];
 			}
 		}
@@ -1197,7 +1206,7 @@ class TaskService extends EventEmitter implements ITaskService {
 						if (active.background) {
 							this.messageService.show(Severity.Info, nls.localize('TaskSystem.activeSame.background', 'The task \'{0}\' is already active and in background mode. To terminate it use `Terminate Task...` from the Tasks menu.', task._label));
 						} else {
-							this.messageService.show(Severity.Info, nls.localize('TaskSystem.activeSame.noBackground', 'The task \'{0}\' is already active. To terminate it use `Terminate Task...` from the Tasks menu.'));
+							this.messageService.show(Severity.Info, nls.localize('TaskSystem.activeSame.noBackground', 'The task \'{0}\' is already active. To terminate it use `Terminate Task...` from the Tasks menu.', task._label));
 						}
 					} else {
 						throw new TaskError(Severity.Warning, nls.localize('TaskSystem.active', 'There is already a task running. Terminate it first before executing another task.'), TaskErrors.RunningTask);
@@ -1248,13 +1257,13 @@ class TaskService extends EventEmitter implements ITaskService {
 			this._taskSystem = new TerminalTaskSystem(
 				this.terminalService, this.outputService, this.markerService,
 				this.modelService, this.configurationResolverService, this.telemetryService,
-				this.workbenchEditorService,
+				this.workbenchEditorService, this.contextService,
 				TaskService.OutputChannelId
 			);
 		} else {
 			let system = new ProcessTaskSystem(
 				this.markerService, this.modelService, this.telemetryService, this.outputService,
-				this.configurationResolverService, TaskService.OutputChannelId,
+				this.configurationResolverService, this.contextService, TaskService.OutputChannelId,
 			);
 			system.hasErrors(this._configHasErrors);
 			this._taskSystem = system;
@@ -1723,12 +1732,14 @@ class TaskService extends EventEmitter implements ITaskService {
 			return;
 		}
 		if (Types.isString(arg)) {
-			this.tasks().then(tasks => {
-				for (let task of tasks) {
-					if (task.identifier === arg) {
-						this.run(task);
-					}
+			this.getTask(arg).then((task) => {
+				if (task) {
+					this.run(task);
+				} else {
+					this.quickOpenService.show('task ');
 				}
+			}, () => {
+				this.quickOpenService.show('task ');
 			});
 		} else {
 			this.quickOpenService.show('task ');
@@ -1739,7 +1750,7 @@ class TaskService extends EventEmitter implements ITaskService {
 		if (!this.canRunCommand()) {
 			return;
 		}
-		if (!this.inTerminal()) {
+		if (this.getJsonSchemaVersion() === JsonSchemaVersion.V0_1_0) {
 			this.build();
 			return;
 		}
@@ -1782,7 +1793,7 @@ class TaskService extends EventEmitter implements ITaskService {
 		if (!this.canRunCommand()) {
 			return;
 		}
-		if (!this.inTerminal()) {
+		if (this.getJsonSchemaVersion() === JsonSchemaVersion.V0_1_0) {
 			this.runTest();
 			return;
 		}
@@ -1888,7 +1899,7 @@ class TaskService extends EventEmitter implements ITaskService {
 		if (!this.canRunCommand()) {
 			return;
 		}
-		if (this.inTerminal()) {
+		if (this.getJsonSchemaVersion() === JsonSchemaVersion.V2_0_0) {
 			this.tasks().then((tasks => {
 				if (tasks.length === 0) {
 					this.configureBuildTask().run();
@@ -1921,7 +1932,7 @@ class TaskService extends EventEmitter implements ITaskService {
 		if (!this.canRunCommand()) {
 			return;
 		}
-		if (this.inTerminal()) {
+		if (this.getJsonSchemaVersion() === JsonSchemaVersion.V2_0_0) {
 			this.tasks().then((tasks => {
 				if (tasks.length === 0) {
 					this.configureAction().run();

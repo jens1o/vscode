@@ -11,12 +11,16 @@ import { IThreadService } from 'vs/workbench/services/thread/common/threadServic
 import { MainContext, MainThreadDebugServiceShape, ExtHostDebugServiceShape, DebugSessionUUID } from 'vs/workbench/api/node/extHost.protocol';
 
 import * as vscode from 'vscode';
+import URI from 'vs/base/common/uri';
 
 
 export class ExtHostDebugService extends ExtHostDebugServiceShape {
 
 	private _debugServiceProxy: MainThreadDebugServiceShape;
 	private _debugSessions: Map<DebugSessionUUID, ExtHostDebugSession> = new Map<DebugSessionUUID, ExtHostDebugSession>();
+
+	private _onDidStartDebugSession: Emitter<vscode.DebugSession>;
+	get onDidStartDebugSession(): Event<vscode.DebugSession> { return this._onDidStartDebugSession.event; }
 
 	private _onDidTerminateDebugSession: Emitter<vscode.DebugSession>;
 	get onDidTerminateDebugSession(): Event<vscode.DebugSession> { return this._onDidTerminateDebugSession.event; }
@@ -34,6 +38,7 @@ export class ExtHostDebugService extends ExtHostDebugServiceShape {
 	constructor(threadService: IThreadService) {
 		super();
 
+		this._onDidStartDebugSession = new Emitter<vscode.DebugSession>();
 		this._onDidTerminateDebugSession = new Emitter<vscode.DebugSession>();
 		this._onDidChangeActiveDebugSession = new Emitter<vscode.DebugSession>();
 		this._onDidReceiveDebugSessionCustomEvent = new Emitter<vscode.DebugSessionCustomEvent>();
@@ -41,13 +46,28 @@ export class ExtHostDebugService extends ExtHostDebugServiceShape {
 		this._debugServiceProxy = threadService.get(MainContext.MainThreadDebugService);
 	}
 
-	public createDebugSession(config: vscode.DebugConfiguration): TPromise<vscode.DebugSession> {
+	public startDebugging(folder: vscode.WorkspaceFolder | undefined, nameOrConfig: string | vscode.DebugConfiguration): TPromise<boolean> {
 
-		return this._debugServiceProxy.$createDebugSession(config).then((id: DebugSessionUUID) => {
+		return this._debugServiceProxy.$startDebugging(folder ? <URI>folder.uri : undefined, nameOrConfig);
+	}
+
+	public startDebugSession(folder: vscode.WorkspaceFolder | undefined, config: vscode.DebugConfiguration): TPromise<vscode.DebugSession> {
+
+		return this._debugServiceProxy.$startDebugSession(folder ? <URI>folder.uri : undefined, config).then((id: DebugSessionUUID) => {
 			const debugSession = new ExtHostDebugSession(this._debugServiceProxy, id, config.type, config.name);
 			this._debugSessions.set(id, debugSession);
 			return debugSession;
 		});
+	}
+
+	public $acceptDebugSessionStarted(id: DebugSessionUUID, type: string, name: string): void {
+
+		let debugSession = this._debugSessions.get(id);
+		if (!debugSession) {
+			debugSession = new ExtHostDebugSession(this._debugServiceProxy, id, type, name);
+			this._debugSessions.set(id, debugSession);
+		}
+		this._onDidStartDebugSession.fire(debugSession);
 	}
 
 	public $acceptDebugSessionTerminated(id: DebugSessionUUID, type: string, name: string): void {
