@@ -152,6 +152,7 @@ export function activate(context: vscode.ExtensionContext) {
  * Holds any registered completion providers by their language strings
  */
 const registeredCompletionProviders: string[] = [];
+const standardCompletionProviders = {};
 
 function registerCompletionProviders(context: vscode.ExtensionContext, isFirstStart: boolean) {
 	let completionProvider = new DefaultCompletionItemProvider();
@@ -160,6 +161,7 @@ function registerCompletionProviders(context: vscode.ExtensionContext, isFirstSt
 		Object.keys(LANGUAGE_MODES).forEach(language => {
 			const provider = vscode.languages.registerCompletionItemProvider(language, completionProvider, ...LANGUAGE_MODES[language]);
 			context.subscriptions.push(provider);
+			standardCompletionProviders[language] = provider;
 		});
 	}
 
@@ -168,6 +170,13 @@ function registerCompletionProviders(context: vscode.ExtensionContext, isFirstSt
 		if (registeredCompletionProviders.includes(language)) {
 			return;
 		}
+
+		// when a standard completion provider is already registered, dispose it first.
+		if (standardCompletionProviders[language]) {
+			standardCompletionProviders[language].dispose();
+			delete standardCompletionProviders[language];
+		}
+
 		const provider = vscode.languages.registerCompletionItemProvider(language, completionProvider, ...LANGUAGE_MODES[includedLanguages[language]]);
 		context.subscriptions.push(provider);
 		registeredCompletionProviders.push(language);
