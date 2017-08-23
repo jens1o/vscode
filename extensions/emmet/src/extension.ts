@@ -154,8 +154,11 @@ export function activate(context: vscode.ExtensionContext) {
 const registeredCompletionProviders: string[] = [];
 const standardCompletionProviders = {};
 
+let savedIncludes = {};
+
 function registerCompletionProviders(context: vscode.ExtensionContext, isFirstStart: boolean) {
 	let completionProvider = new DefaultCompletionItemProvider();
+	let includedLanguages = getMappingForIncludedLanguages();
 
 	if (isFirstStart) {
 		Object.keys(LANGUAGE_MODES).forEach(language => {
@@ -163,9 +166,12 @@ function registerCompletionProviders(context: vscode.ExtensionContext, isFirstSt
 			context.subscriptions.push(provider);
 			standardCompletionProviders[language] = provider;
 		});
+	} else if (savedIncludes !== includedLanguages) {
+		savedIncludes = includedLanguages;
+	} else {
+		return;
 	}
 
-	let includedLanguages = getMappingForIncludedLanguages();
 	Object.keys(includedLanguages).forEach(language => {
 		if (registeredCompletionProviders.includes(language)) {
 			return;
